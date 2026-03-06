@@ -255,6 +255,87 @@ public:
 };
 
 #if ENABLE_SIMD_OPT_QUANT
+static bool check_checkAllRdCostsOdd1( DepQuant* ref, DepQuant* opt, unsigned num_cases )
+{
+  printf( "Testing DepQuant::checkAllRdCostsOdd1\n" );
+
+  InputGenerator<TCoeff> g4{ 4, /*is_signed=*/false };
+  InputGenerator<TCoeff> g20{ 20, /*is_signed=*/false };
+  InputGenerator<TCoeff> g31{ 31 };
+  InputGenerator<TCoeff> g_dist{ 20 };
+  DimensionGenerator rng;
+
+  DQIntern::Decisions decisions_ref;
+  DQIntern::Decisions decisions_opt;
+  DQIntern::StateMem state;
+  BinFracBits sigBuf[4][DQIntern::RateEstimator::sm_maxNumSigCtx];
+  for( int j = 0; j < 4; ++j )
+  {
+    // Init state.
+    state.rdCost[j] = DQIntern::rdCostInit;
+    state.ctx.cff[j] = 0;
+    state.ctx.sig[j] = 0;
+    state.numSig[j] = 0;
+    state.refSbbCtxId[j] = -1;
+    state.remRegBins[j] = 4;
+    state.cffBitsCtxOffset = 0;
+    state.m_goRicePar[j] = 0;
+    state.m_goRiceZero[j] = 0;
+    state.sbbBits0[j] = 0;
+    state.sbbBits1[j] = 0;
+    state.m_sigFracBitsArray[j] = sigBuf[j];
+  }
+
+  bool passed = true;
+
+  for( unsigned i = 0; i < num_cases; ++i )
+  {
+    for( DQIntern::ScanPosType spt : { DQIntern::SCAN_ISCSBB, DQIntern::SCAN_SOCSBB, DQIntern::SCAN_EOCSBB } )
+    {
+      std::ostringstream sstm;
+      const char* spt_str =
+          spt == DQIntern::SCAN_ISCSBB ? "ISC_SBB" : spt == DQIntern::SCAN_SOCSBB ? "SOC_SBB" : "EOC_SBB";
+      sstm << "DepQuant checkAllRdCostsOdd1 scanPosType=" << spt_str;
+
+      const int64_t pq_a_dist = g_dist();
+      const int64_t pq_b_dist = g_dist();
+
+      state.cffBitsCtxOffset = rng.get( 0, DQIntern::RateEstimator::sm_maxNumGtxCtx - 2 );
+      for( int j = 0; j < 4; ++j )
+      {
+        state.ctx.sig[j] = rng.get( 0, DQIntern::RateEstimator::sm_maxNumSigCtx - 1 );
+        // The X86 implementation assumes that the ctx.cff[i] values are in the range [cffBitsCtxOffset,
+        // cffBitsCtxOffset + 4].
+        state.ctx.cff[j] = rng.get( state.cffBitsCtxOffset, state.cffBitsCtxOffset + 4 );
+
+        for( int k = 0; k < DQIntern::RateEstimator::sm_maxNumSigCtx; ++k )
+        {
+          sigBuf[j][k].intBits[0] = g20();
+          sigBuf[j][k].intBits[1] = g20();
+        }
+        decisions_ref.rdCost[j] = decisions_opt.rdCost[j] = DQIntern::rdCostInit >> 2;
+        decisions_ref.absLevel[j] = decisions_opt.absLevel[j] = -1;
+        decisions_ref.prevId[j] = decisions_opt.prevId[j] = -2;
+      }
+
+      std::generate( state.rdCost, state.rdCost + 4, g31 );
+      std::generate( state.sbbBits1, state.sbbBits1 + 4, g20 );
+      std::generate( state.numSig, state.numSig + 4, g4 );
+      std::generate( state.cffBits1, state.cffBits1 + DQIntern::RateEstimator::sm_maxNumGtxCtx + 3, g20 );
+
+      ref->m_checkAllRdCostsOdd1( spt, pq_a_dist, pq_b_dist, decisions_ref, state );
+      opt->m_checkAllRdCostsOdd1( spt, pq_a_dist, pq_b_dist, decisions_opt, state );
+
+      passed = compare_values_1d( sstm.str() + " rdCost", decisions_ref.rdCost, decisions_opt.rdCost, 4 ) && passed;
+      passed =
+          compare_values_1d( sstm.str() + " absLevel", decisions_ref.absLevel, decisions_opt.absLevel, 4 ) && passed;
+      passed = compare_values_1d( sstm.str() + " prevId", decisions_ref.prevId, decisions_opt.prevId, 4 ) && passed;
+    }
+  }
+
+  return passed;
+}
+
 static bool check_updateStates( DepQuant* ref, DepQuant* opt, unsigned num_cases )
 {
   printf( "Testing DepQuant::updateStates\n" );
@@ -512,6 +593,7 @@ static bool test_DepQuant()
   unsigned num_cases = NUM_CASES;
   bool passed = true;
 
+  passed = check_checkAllRdCostsOdd1( ref.get(), opt.get(), num_cases ) && passed;
   passed = check_updateStates( ref.get(), opt.get(), num_cases ) && passed;
   passed = check_updateStatesEOS( ref.get(), opt.get(), num_cases ) && passed;
 
