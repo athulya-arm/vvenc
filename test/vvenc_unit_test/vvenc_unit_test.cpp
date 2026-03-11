@@ -576,6 +576,62 @@ static bool check_updateStatesEOS( DepQuant* ref, DepQuant* opt, unsigned num_ca
   return passed;
 }
 
+template<typename G>
+static bool check_one_xFindFirstTestPos( DepQuant* ref, DepQuant* opt, bool zeroOutforThres, G input_generator )
+{
+  std::ostringstream sstm;
+  sstm << "DepQuant xFindFirstTestPos" << " zeroOutforThres=" << std::boolalpha << zeroOutforThres;
+
+  DimensionGenerator rng;
+
+  DQIntern::Rom rom;
+  rom.init();
+  std::vector<TCoeff> tCoeff( 8192 );
+
+  std::generate( tCoeff.begin(), tCoeff.end(), input_generator );
+
+  int pos_ref = rng.getOneOf<int>( { 31, 63, 127, 255, 511, 1023 } );
+  TCoeff defaultTh = rng.get( 4, 128 );
+  int zeroOutWidth = rng.getOneOf<int>( { 32, 64 } );
+  int zeroOutHeight = rng.getOneOf<int>( { 32, 64 } );
+
+  int width = rng.getOneOf<int>( { 4, 8, 16, 32, 64 } );
+  int height = rng.getOneOf<int>( { 4, 8, 16, 32, 64 } );
+  DQIntern::TUParameters tuPars( rom, width, height, CH_C );
+
+  int pos_opt = pos_ref;
+  ref->m_findFirstPos( pos_ref, tCoeff.data(), tuPars, defaultTh, zeroOutforThres, zeroOutWidth, zeroOutHeight );
+  opt->m_findFirstPos( pos_opt, tCoeff.data(), tuPars, defaultTh, zeroOutforThres, zeroOutWidth, zeroOutHeight );
+
+  return compare_value( sstm.str(), pos_ref, pos_opt );
+}
+
+static bool check_xFindFirstTestPos( DepQuant* ref, DepQuant* opt, unsigned num_cases )
+{
+  printf( "Testing DepQuant::xFindFirstTestPos\n" );
+
+  InputGenerator<TCoeff> g12{ 12 };
+  InputGenerator<TCoeff> g6{ 6 };
+
+  for( unsigned i = 0; i < num_cases; ++i )
+  {
+    for( bool zeroOutforThres : { false, true } )
+    {
+      if( !check_one_xFindFirstTestPos( ref, opt, zeroOutforThres, g12 ) )
+      {
+        return false;
+      }
+    }
+    // No coefficients found cases from the subblocks.
+    if( !check_one_xFindFirstTestPos( ref, opt, false, g6 ) )
+    {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 static bool test_DepQuant()
 {
   auto ref = std::make_unique<DepQuant>( /*other=*/nullptr,
@@ -596,6 +652,7 @@ static bool test_DepQuant()
   passed = check_checkAllRdCostsOdd1( ref.get(), opt.get(), num_cases ) && passed;
   passed = check_updateStates( ref.get(), opt.get(), num_cases ) && passed;
   passed = check_updateStatesEOS( ref.get(), opt.get(), num_cases ) && passed;
+  passed = check_xFindFirstTestPos( ref.get(), opt.get(), num_cases ) && passed;
 
   return passed;
 }

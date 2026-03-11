@@ -55,6 +55,69 @@ namespace vvenc {
 
 namespace DQIntern
 {
+  static void findFirstPos( int& firstTestPos, const TCoeff* tCoeff, const DQIntern::TUParameters& tuPars, int defaultTh,
+                            bool zeroOutForThres, int zeroOutWidth, int zeroOutHeight )
+  {
+    if( firstTestPos >= 16 && tuPars.m_log2SbbWidth == 2 && tuPars.m_log2SbbHeight == 2 )
+    {
+      bool foundSubBlock = false;
+      const int sbbSize = tuPars.m_sbbSize;
+      // Move the pointer to the beginning of the current subblock.
+      firstTestPos -= sbbSize - 1;
+
+      // For each subblock.
+      for( ; firstTestPos >= 0; firstTestPos -= sbbSize )
+      {
+        // Skip zeroed out blocks for 64-point transformation the coding order takes care of that.
+        if( zeroOutForThres && ( tuPars.m_scanId2BlkPos[firstTestPos].x >= zeroOutWidth ||
+                                tuPars.m_scanId2BlkPos[firstTestPos].y >= zeroOutHeight ) )
+        {
+          continue;
+        }
+
+        // Read first line of the subblock and check for coefficients larger than the threshold
+        // assuming the subblocks are dense 4x4 blocks in raster scan order with the stride of tuPars.m_width.
+        int pos = tuPars.m_scanId2BlkPos[firstTestPos].idx;
+        for( int i = 0; i < 4 && !foundSubBlock; ++i, pos += tuPars.m_width )
+        {
+          for( int j = 0; j < 4; ++j )
+          {
+            TCoeff absCoeff = std::abs( tCoeff[pos + j] );
+            if( absCoeff > defaultTh )
+            {
+              // If any of the 16 comparisons were true, break, because this subblock contains a coefficient larger
+              // than threshold.
+              foundSubBlock = true;
+              break;
+            }
+          }
+        }
+        if( foundSubBlock )
+        {
+          break;
+        }
+      }
+      if( firstTestPos >= 0 )
+      {
+        // If a coefficient was found, advance the pointer to the end of the current subblock
+        // for the subsequent coefficient-wise refinement.
+        firstTestPos += sbbSize - 1;
+      }
+    }
+    for( ; firstTestPos >= 0; firstTestPos-- )
+    {
+      if( zeroOutForThres && ( tuPars.m_scanId2BlkPos[firstTestPos].x >= zeroOutWidth ||
+                              tuPars.m_scanId2BlkPos[firstTestPos].y >= zeroOutHeight ) )
+      {
+        continue;
+      }
+      if( abs( tCoeff[tuPars.m_scanId2BlkPos[firstTestPos].idx] ) > defaultTh )
+      {
+        break;
+      }
+    }
+  }
+
   void Rom::xInitScanArrays()
   {
     if( m_scansInitialized )
@@ -1169,16 +1232,7 @@ void DepQuant::xQuantDQ( TransformUnit& tu, const CCoeffBuf& srcCoeff, const Com
   {
     const TCoeff defaultTh = TCoeff( thres / ( defaultQuantisationCoefficient << 2 ) );
 
-    if( m_findFirstPos )
-    {
-      m_findFirstPos( firstTestPos, tCoeff, tuPars, defaultTh, zeroOutforThres, zeroOutWidth, zeroOutHeight );
-    }
-
-    for( ; firstTestPos >= 0; firstTestPos-- )
-    {
-      if( zeroOutforThres && ( tuPars.m_scanId2BlkPos[firstTestPos].x >= zeroOutWidth || tuPars.m_scanId2BlkPos[firstTestPos].y >= zeroOutHeight ) ) continue;
-      if( abs( tCoeff[tuPars.m_scanId2BlkPos[firstTestPos].idx] ) > defaultTh ) break;
-    }
+    m_findFirstPos( firstTestPos, tCoeff, tuPars, defaultTh, zeroOutforThres, zeroOutWidth, zeroOutHeight );
   }
 
   if( firstTestPos < 0 )
@@ -1434,7 +1488,7 @@ DepQuant::DepQuant( const Quant* other, bool enc, bool useScalingLists, bool ena
   m_checkAllRdCostsOdd1 = DQIntern::checkAllRdCostsOdd1;
   m_updateStatesEOS     = DQIntern::updateStatesEOS;
   m_updateStates        = DQIntern::updateStates;
-  m_findFirstPos        = nullptr;
+  m_findFirstPos        = DQIntern::findFirstPos;
 
   if( enableOpt )
   {
