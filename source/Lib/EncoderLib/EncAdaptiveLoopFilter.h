@@ -81,15 +81,18 @@ public:
 
   int ( *m_gnsSolveByChol )( AlfCovariance::TE LHS, alf_float_t* rhs, alf_float_t* x, int numEq );
 
-  AlfCovariance() : numBins( -1 ), _numBinsAlloc( -1 ), y( nullptr ), E( nullptr ), all0( true )
+  AlfCovariance( bool enableOpt = true ) : numBins( -1 ), _numBinsAlloc( -1 ), y( nullptr ), E( nullptr ), all0( true )
   {
     m_gnsSolveByChol = &AlfCovariance::gnsSolveByChol;
 
+    if( enableOpt )
+    {
 #if ENABLE_SIMD_OPT_ALF
 #ifdef TARGET_SIMD_ARM
-    initAlfCovarianceARM();
+      initAlfCovarianceARM();
 #endif
 #endif
+    }
   }
   ~AlfCovariance() { }
 
