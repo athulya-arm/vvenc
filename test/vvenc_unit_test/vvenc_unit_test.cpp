@@ -3180,8 +3180,8 @@ static bool check_xFilteringPandQ( void ( *neon )( Pel*, ptrdiff_t, const ptrdif
   std::vector<Pel> buf_ref  = input;
   std::vector<Pel> buf_neon = input;
 
-  // Horizontal (step==1): boundary at row 8, col 0  — needs rows [0..15]
-  // Vertical   (step==stride): boundary at row 0, col 8 — needs cols [0..16]
+  // Horizontal (step==1): boundary at row 8, col 0  -- needs rows [0..15]
+  // Vertical   (step==stride): boundary at row 0, col 8 -- needs cols [0..16]
   ptrdiff_t src_idx = ( step == 1 ) ? 8 * stride : 8;
 
   vvenc::xFilteringPandQCore( buf_ref.data()  + src_idx, step, offset, nP, nQ, tc );
