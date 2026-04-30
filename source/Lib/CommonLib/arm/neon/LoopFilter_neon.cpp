@@ -66,7 +66,7 @@ static const int tcCoeffs7[7] = { 6, 5, 4, 3, 2, 1, 1 };
 static const int tcCoeffs3[3] = { 6, 4, 2 };
 
 // ====================================================================================================================
-// Long (bilinear) filter — horizontal edge (step == 1)
+// Long (bilinear) filter -- horizontal edge (step == 1)
 // ====================================================================================================================
 
 static inline void xFilteringPandQHor_neon( Pel* src, ptrdiff_t step, const ptrdiff_t offset,
@@ -163,9 +163,9 @@ static inline void xFilteringPandQHor_neon( Pel* src, ptrdiff_t step, const ptrd
   }
 }
 
-// Vertical edge long filter: scalar fallback (matches x86 non-AVX2 path)
-static inline void xFilteringPandQVer_scalar( Pel* src, ptrdiff_t step, const ptrdiff_t offset,
-                                              int numberPSide, int numberQSide, int tc )
+// Vertical edge long filter -- lane loads/stores across 4 rows
+static inline void xFilteringPandQVer_neon( Pel* src, ptrdiff_t step, const ptrdiff_t offset,
+                                            int numberPSide, int numberQSide, int tc )
 {
   CHECKD( offset != 1, "offset must be 1 for vertical edge" );
 
@@ -174,10 +174,12 @@ static inline void xFilteringPandQVer_scalar( Pel* src, ptrdiff_t step, const pt
   const int* tcP       = numberPSide == 3 ? tcCoeffs3 : tcCoeffs7;
   const int* tcQ       = numberQSide == 3 ? tcCoeffs3 : tcCoeffs7;
 
+  uint64_t refPx4 = 0, refQx4 = 0, refMiddlex4 = 0;
+
   for( int i = 0; i < DEBLOCK_SMALLEST_BLOCK / 2; i++ )
   {
-    Pel* srcP = src + step * i - offset;
-    Pel* srcQ = src + step * i;
+    const Pel* srcP = src + step * i - offset;
+    const Pel* srcQ = src + step * i;
 
     const Pel refP = ( srcP[-numberPSide * offset] + srcP[-( numberPSide - 1 ) * offset] + 1 ) >> 1;
     const Pel refQ = ( srcQ[ numberQSide * offset] + srcQ[  ( numberQSide - 1 ) * offset] + 1 ) >> 1;
@@ -213,21 +215,58 @@ static inline void xFilteringPandQVer_scalar( Pel* src, ptrdiff_t step, const pt
                       + srcP[-2*offset] + srcQ[2*offset] + srcP[-3*offset] + srcQ[3*offset] + 4 ) >> 3;
     }
 
-    for( int pos = 0; pos < numberPSide; pos++ )
-    {
-      int src_val = srcP[-offset * pos];
-      int cvalue  = ( tc * tcP[pos] ) >> 1;
-      srcP[-offset * pos] = Clip3( src_val - cvalue, src_val + cvalue,
-                                   ( refMiddle * dbCoeffsP[pos] + refP * ( 64 - dbCoeffsP[pos] ) + 32 ) >> 6 );
-    }
+    refPx4      |= ( (uint64_t)(uint16_t)refP      << ( i * 16 ) );
+    refQx4      |= ( (uint64_t)(uint16_t)refQ      << ( i * 16 ) );
+    refMiddlex4 |= ( (uint64_t)(uint16_t)refMiddle << ( i * 16 ) );
+  }
 
-    for( int pos = 0; pos < numberQSide; pos++ )
-    {
-      int src_val = srcQ[offset * pos];
-      int cvalue  = ( tc * tcQ[pos] ) >> 1;
-      srcQ[offset * pos] = Clip3( src_val - cvalue, src_val + cvalue,
-                                  ( refMiddle * dbCoeffsQ[pos] + refQ * ( 64 - dbCoeffsQ[pos] ) + 32 ) >> 6 );
-    }
+  int16x4_t vref_mid = vreinterpret_s16_u64( vcreate_u64( refMiddlex4 ) );
+  int16x4_t vref_p   = vreinterpret_s16_u64( vcreate_u64( refPx4 ) );
+  int16x4_t vref_q   = vreinterpret_s16_u64( vcreate_u64( refQx4 ) );
+
+  Pel* srcP = src - offset;
+  Pel* srcQ = src;
+
+  for( int pos = 0; pos < numberPSide; pos++ )
+  {
+    Pel* base      = srcP - offset * pos;
+    int16x4_t vsrc = vld1_lane_s16( base,          vdup_n_s16( 0 ), 0 );
+    vsrc            = vld1_lane_s16( base + step,   vsrc,            1 );
+    vsrc            = vld1_lane_s16( base + step*2, vsrc,            2 );
+    vsrc            = vld1_lane_s16( base + step*3, vsrc,            3 );
+    int16x4_t cval   = vdup_n_s16( (int16_t)( ( tc * tcP[pos] ) >> 1 ) );
+    int16x4_t vlo    = vsub_s16( vsrc, cval );
+    int16x4_t vhi    = vadd_s16( vsrc, cval );
+    int32x4_t vacc   = vmull_s16( vref_mid, vdup_n_s16( (int16_t)dbCoeffsP[pos] ) );
+    vacc              = vmlal_s16( vacc, vref_p, vdup_n_s16( (int16_t)( 64 - dbCoeffsP[pos] ) ) );
+    vacc              = vaddq_s32( vacc, vdupq_n_s32( 32 ) );
+    int16x4_t vresult = vqmovn_s32( vshrq_n_s32( vacc, 6 ) );
+    vresult            = vmin_s16( vmax_s16( vresult, vlo ), vhi );
+    vst1_lane_s16( base,          vresult, 0 );
+    vst1_lane_s16( base + step,   vresult, 1 );
+    vst1_lane_s16( base + step*2, vresult, 2 );
+    vst1_lane_s16( base + step*3, vresult, 3 );
+  }
+
+  for( int pos = 0; pos < numberQSide; pos++ )
+  {
+    Pel* base      = srcQ + offset * pos;
+    int16x4_t vsrc = vld1_lane_s16( base,          vdup_n_s16( 0 ), 0 );
+    vsrc            = vld1_lane_s16( base + step,   vsrc,            1 );
+    vsrc            = vld1_lane_s16( base + step*2, vsrc,            2 );
+    vsrc            = vld1_lane_s16( base + step*3, vsrc,            3 );
+    int16x4_t cval   = vdup_n_s16( (int16_t)( ( tc * tcQ[pos] ) >> 1 ) );
+    int16x4_t vlo    = vsub_s16( vsrc, cval );
+    int16x4_t vhi    = vadd_s16( vsrc, cval );
+    int32x4_t vacc   = vmull_s16( vref_mid, vdup_n_s16( (int16_t)dbCoeffsQ[pos] ) );
+    vacc              = vmlal_s16( vacc, vref_q, vdup_n_s16( (int16_t)( 64 - dbCoeffsQ[pos] ) ) );
+    vacc              = vaddq_s32( vacc, vdupq_n_s32( 32 ) );
+    int16x4_t vresult = vqmovn_s32( vshrq_n_s32( vacc, 6 ) );
+    vresult            = vmin_s16( vmax_s16( vresult, vlo ), vhi );
+    vst1_lane_s16( base,          vresult, 0 );
+    vst1_lane_s16( base + step,   vresult, 1 );
+    vst1_lane_s16( base + step*2, vresult, 2 );
+    vst1_lane_s16( base + step*3, vresult, 3 );
   }
 }
 
@@ -239,7 +278,7 @@ static void xFilteringPandQNeon( Pel* src, ptrdiff_t step, const ptrdiff_t offse
   if( step == 1 )
     xFilteringPandQHor_neon( src, step, offset, numberPSide, numberQSide, tc );
   else
-    xFilteringPandQVer_scalar( src, step, offset, numberPSide, numberQSide, tc );
+    xFilteringPandQVer_neon( src, step, offset, numberPSide, numberQSide, tc );
 }
 
 // ====================================================================================================================
@@ -253,6 +292,12 @@ void LoopFilter::_initLoopFilterARM()
 }
 
 template void LoopFilter::_initLoopFilterARM<NEON>();
+
+void xFilteringPandQNeonEntry( Pel* src, ptrdiff_t step, const ptrdiff_t offset,
+                               int numberPSide, int numberQSide, int tc )
+{
+  xFilteringPandQNeon( src, step, offset, numberPSide, numberQSide, tc );
+}
 
 }  // namespace vvenc
 
